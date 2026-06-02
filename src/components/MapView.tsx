@@ -17,9 +17,44 @@ export default function MapView() {
   const tileGridRef = useRef<L.FeatureGroup | null>(null)
   const [mapReady, setMapReady] = useState(false)
   const [currentZoom, setCurrentZoom] = useState(5)
+  const [viewBounds, setViewBounds] = useState<L.LatLngBounds | null>(null)
 
   const { activeSourceId, tileSources, boundaries, activeBoundaryId, setActiveBoundary,
     previewTiles } = useStore()
+
+  const getVisibleBBox = useCallback(() => {
+    if (!mapRef.current) return null
+    const bounds = mapRef.current.getBounds()
+    return {
+      north: bounds.getNorth(),
+      south: bounds.getSouth(),
+      east: bounds.getEast(),
+      west: bounds.getWest(),
+    }
+  }, [])
+
+  const intersectBBox = useCallback((
+    a: { north: number; south: number; east: number; west: number },
+    b: { north: number; south: number; east: number; west: number },
+  ) => {
+    const west = Math.max(a.west, b.west)
+    const east = Math.min(a.east, b.east)
+    const south = Math.max(a.south, b.south)
+    const north = Math.min(a.north, b.north)
+    if (west >= east || south >= north) return null
+    return { north, south, east, west }
+  }, [])
+
+  const tileIntersectsBBox = useCallback((
+    tile: { z: number; x: number; y: number },
+    bbox: { north: number; south: number; east: number; west: number },
+  ) => {
+    const b = tileBounds(tile.x, tile.y, tile.z)
+    return b.west < bbox.east
+      && b.east > bbox.west
+      && b.south < bbox.north
+      && b.north > bbox.south
+  }, [])
 
   // 初始化地图 — 只创建一次，不随数据源切换销毁
   useEffect(() => {
@@ -191,15 +226,26 @@ export default function MapView() {
     if (!activeBoundary) return
 
     const z = mapRef.current.getZoom()
+    const visibleBBox = getVisibleBBox()
+    if (!visibleBBox) return
 
     // 优先用下载弹窗传来的 previewTiles（含全级别）；否则自行计算当前级别
     let tilesAtZoom: { z: number; x: number; y: number }[]
     if (previewTiles.length > 0) {
-      tilesAtZoom = previewTiles.filter(t => t.z === z)
+      tilesAtZoom = previewTiles.filter(t => t.z === z && tileIntersectsBBox(t, visibleBBox))
     } else {
       try {
         const bbox = getPolygonBBox(activeBoundary.geojson)
-        const allTiles = getTilesInRange(bbox.north, bbox.south, bbox.east, bbox.west, z)
+        const visibleBoundaryBBox = intersectBBox(bbox, visibleBBox)
+        if (!visibleBoundaryBBox) return
+
+        const allTiles = getTilesInRange(
+          visibleBoundaryBBox.north,
+          visibleBoundaryBBox.south,
+          visibleBoundaryBBox.east,
+          visibleBoundaryBBox.west,
+          z,
+        )
         tilesAtZoom = activeBoundary.geojson.type === 'MultiPolygon'
           ? allTiles
           : filterTilesByPolygon(allTiles, activeBoundary.geojson)
@@ -226,15 +272,33 @@ export default function MapView() {
     })
     group.addTo(mapRef.current)
     tileGridRef.current = group
-  }, [previewTiles, mapReady, currentZoom, activeBoundaryId, boundaries])
+  }, [
+    previewTiles,
+    mapReady,
+    currentZoom,
+    viewBounds,
+    activeBoundaryId,
+    boundaries,
+    getVisibleBBox,
+    intersectBBox,
+    tileIntersectsBBox,
+  ])
 
   // 跟踪地图缩放级别
   useEffect(() => {
     if (!mapRef.current || !mapReady) return
     const map = mapRef.current
-    const onZoom = () => setCurrentZoom(map.getZoom())
-    map.on('zoomend', onZoom)
-    return () => { map.off('zoomend', onZoom) }
+    const updateViewState = () => {
+      setCurrentZoom(map.getZoom())
+      setViewBounds(map.getBounds())
+    }
+    updateViewState()
+    map.on('moveend', updateViewState)
+    map.on('zoomend', updateViewState)
+    return () => {
+      map.off('moveend', updateViewState)
+      map.off('zoomend', updateViewState)
+    }
   }, [mapReady])
 
   const activeSource = tileSources.find(s => s.id === activeSourceId)

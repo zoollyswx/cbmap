@@ -149,9 +149,9 @@ export default function DownloadDialog() {
     addDownloadTask(task)
     updateDownloadTask(taskId, { status: 'running' })
 
-    // 更新为实际瓦片列表供网格预览
-    setFilteredTiles(tiles)
-    setPreviewTiles(tiles)
+    // MapView renders the grid from the current viewport; do not retain the full tile list for preview.
+    setFilteredTiles([])
+    setPreviewTiles([])
 
     // 保存配置
     if (window.electronAPI) {
