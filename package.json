@@ -3,6 +3,17 @@
   "version": "1.0.0",
   "description": "Offline map tile management and download tool",
   "author": "CBMap contributors",
+  "keywords": [
+    "gis",
+    "offline-map",
+    "map-tiles",
+    "mbtiles",
+    "leaflet",
+    "electron",
+    "tile-downloader",
+    "geojson",
+    "wkt"
+  ],
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",

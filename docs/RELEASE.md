@@ -19,6 +19,18 @@ release/CBMap-1.0.0-Windows-x64.zip
 
 The `.exe` file is the installer for Windows 11 64-bit users. It installs CBMap into `%LOCALAPPDATA%\Programs\CBMap` and creates desktop and Start menu shortcuts.
 
+Published GitHub Release asset name:
+
+```text
+CBMap.Setup.1.0.0.Windows.x64.exe
+```
+
+SHA256:
+
+```text
+10D9F36D4457B8365A7D17270429AABCE478F135135A677FBE9B9F77A1201843
+```
+
 If `npm run electron:build` fails while extracting `winCodeSign` with a message about missing symbolic-link privileges, run Windows with Developer Mode enabled or use an elevated shell. The IExpress installer script can still package an existing `release/win-unpacked` directory.
 
 ## Publish On GitHub
@@ -59,5 +71,5 @@ Initial Windows release.
 - MBTiles export support.
 - Optimized failed-tile handling to avoid long delays on unavailable or throttled tiles.
 
-Download `CBMap Setup 1.0.0 Windows x64.exe` for Windows 11 64-bit.
+Download `CBMap.Setup.1.0.0.Windows.x64.exe` for Windows 11 64-bit.
 ```
