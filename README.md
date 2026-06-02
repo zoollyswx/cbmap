@@ -8,7 +8,7 @@
 
 CBMap is a Windows desktop tool for downloading offline map tiles by boundary. It supports online XYZ-style tile sources, WKT/GeoJSON boundary import, map drawing tools, concurrent downloads, failed-tile retry, and MBTiles export.
 
-![CBMap download dialog](docs/assets/cbmap-download-dialog.png)
+![CBMap main preview](docs/assets/cbmap-main-preview.png)
 
 ## 中文简介
 
