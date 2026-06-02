@@ -3,10 +3,11 @@ import path from 'path'
 import https from 'https'
 import http from 'http'
 
-const TILE_TIMEOUT_MS = 12000
-const MAX_RETRIES = 2
+const TILE_TIMEOUT_MS = 8000
+const MAIN_DOWNLOAD_RETRIES = 0
+const RETRY_DOWNLOAD_RETRIES = 1
 const DEFAULT_CONCURRENCY = 4
-const RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504])
+const RETRYABLE_STATUS_CODES = new Set([408, 500, 502, 503, 504])
 
 // Node.js https 模块没有 Chromium 的 per-host 连接数限制
 const httpsAgent = new https.Agent({
@@ -26,6 +27,7 @@ const httpAgent = new http.Agent({
 interface TaskControl {
   cancelled: boolean
   failedTileCoords: { z: number; x: number; y: number }[]
+  failureStats: Record<string, number>
 }
 
 const downloadTasks: Map<string, TaskControl> = new Map()
@@ -80,7 +82,13 @@ function buildTilePath(
     .replace('{y}', String(y))
 }
 
-type TileResult = 'downloaded' | 'skipped' | 'failed' | 'retryable-failed'
+type TileOutcome = 'downloaded' | 'skipped' | 'failed' | 'retryable-failed'
+interface TileResult {
+  outcome: TileOutcome
+  reason?: string
+}
+
+const tileResult = (outcome: TileOutcome, reason?: string): TileResult => ({ outcome, reason })
 
 function downloadSingleTile(url: string, filePath: string): Promise<TileResult> {
   return new Promise((resolve) => {
@@ -89,17 +97,23 @@ function downloadSingleTile(url: string, filePath: string): Promise<TileResult> 
       try {
         fs.mkdirSync(dir, { recursive: true })
       } catch {
-        resolve('failed')
+        resolve(tileResult('failed', 'mkdir'))
         return
       }
     }
 
     if (fs.existsSync(filePath)) {
-      resolve('skipped')
+      resolve(tileResult('skipped'))
       return
     }
 
-    const parsedUrl = new URL(url)
+    let parsedUrl: URL
+    try {
+      parsedUrl = new URL(url)
+    } catch {
+      resolve(tileResult('failed', 'invalid-url'))
+      return
+    }
     const isHttps = parsedUrl.protocol === 'https:'
     const transport = isHttps ? https : http
     const agent = isHttps ? httpsAgent : httpAgent
@@ -115,7 +129,7 @@ function downloadSingleTile(url: string, filePath: string): Promise<TileResult> 
     const timeout = setTimeout(() => {
       if (!done) {
         req.destroy()
-        finish('retryable-failed')
+        finish(tileResult('retryable-failed', 'timeout'))
       }
     }, TILE_TIMEOUT_MS)
 
@@ -132,7 +146,11 @@ function downloadSingleTile(url: string, filePath: string): Promise<TileResult> 
       (res) => {
         if (res.statusCode !== 200) {
           res.resume()
-          finish(RETRYABLE_STATUS_CODES.has(res.statusCode ?? 0) ? 'retryable-failed' : 'failed')
+          const reason = `http ${res.statusCode ?? 'unknown'}`
+          finish(tileResult(
+            RETRYABLE_STATUS_CODES.has(res.statusCode ?? 0) ? 'retryable-failed' : 'failed',
+            reason
+          ))
           return
         }
 
@@ -142,30 +160,37 @@ function downloadSingleTile(url: string, filePath: string): Promise<TileResult> 
           const buffer = Buffer.concat(chunks)
           try {
             fs.writeFileSync(filePath, buffer)
-            finish('downloaded')
+            finish(tileResult('downloaded'))
           } catch {
-            finish('failed')
+            finish(tileResult('failed', 'write-file'))
           }
         })
-        res.on('error', () => finish('retryable-failed'))
+        res.on('error', () => finish(tileResult('retryable-failed', 'response-error')))
       }
     )
 
-    req.on('error', () => finish('retryable-failed'))
+    req.on('error', () => finish(tileResult('retryable-failed', 'network')))
     req.end()
   })
 }
 
-async function downloadWithRetry(url: string, filePath: string): Promise<TileResult> {
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+async function downloadWithRetry(url: string, filePath: string, maxRetries: number): Promise<TileResult> {
+  let lastRetryableReason = 'retry-exhausted'
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const result = await downloadSingleTile(url, filePath)
-    if (result === 'failed') return 'failed'
-    if (result !== 'retryable-failed') return result
-    if (attempt < MAX_RETRIES) {
+    if (result.outcome === 'failed') return result
+    if (result.outcome !== 'retryable-failed') return result
+    lastRetryableReason = result.reason ?? lastRetryableReason
+    if (attempt < maxRetries) {
       await new Promise(r => setTimeout(r, 300 * (attempt + 1)))
     }
   }
-  return 'failed'
+  return tileResult('failed', lastRetryableReason)
+}
+
+function recordFailure(taskControl: TaskControl, reason?: string) {
+  const key = reason || 'unknown'
+  taskControl.failureStats[key] = (taskControl.failureStats[key] ?? 0) + 1
 }
 
 async function runWithPool(
@@ -173,7 +198,12 @@ async function runWithPool(
   taskControl: TaskControl,
   maxConcurrent: number,
   buildRequest: (tile: { z: number; x: number; y: number }) => Promise<TileResult>,
-  onProgress: (completed: number, failed: number, skipped: number) => void,
+  onProgress: (
+    completed: number,
+    failed: number,
+    skipped: number,
+    failureStats: Record<string, number>,
+  ) => void,
 ) {
   const total = tiles.length
   let completed = 0
@@ -181,7 +211,7 @@ async function runWithPool(
   let skipped = 0
   let nextIndex = 0
 
-  const sendProgress = () => onProgress(completed, failed, skipped)
+  const sendProgress = () => onProgress(completed, failed, skipped, { ...taskControl.failureStats })
 
   async function worker(): Promise<void> {
     while (nextIndex < tiles.length && !taskControl.cancelled) {
@@ -189,15 +219,17 @@ async function runWithPool(
       const tile = tiles[i]
       try {
         const result = await buildRequest(tile)
-        if (result === 'downloaded') completed++
-        else if (result === 'skipped') skipped++
+        if (result.outcome === 'downloaded') completed++
+        else if (result.outcome === 'skipped') skipped++
         else {
           failed++
           taskControl.failedTileCoords.push(tile)
+          recordFailure(taskControl, result.reason)
         }
       } catch {
         failed++
         taskControl.failedTileCoords.push(tile)
+        recordFailure(taskControl, 'exception')
       }
       if ((completed + failed + skipped) % 50 === 0 || nextIndex >= total) {
         sendProgress()
@@ -220,7 +252,7 @@ export async function downloadTiles(
   const { tiles, urlTemplate, saveDir, nameFormat, sourceName, subdomains, taskId, concurrency } = options
   const maxConcurrent = concurrency ?? DEFAULT_CONCURRENCY
 
-  const taskControl: TaskControl = { cancelled: false, failedTileCoords: [] }
+  const taskControl: TaskControl = { cancelled: false, failedTileCoords: [], failureStats: {} }
   downloadTasks.set(taskId, taskControl)
 
   const total = tiles.length
@@ -232,8 +264,8 @@ export async function downloadTiles(
     const url = buildTileUrl(urlTemplate, tile.z, tile.x, tile.y, subdomains)
     const tilePath = buildTilePath(nameFormat, sourceName, tile.z, tile.x, tile.y)
     const fullPath = path.join(saveDir, tilePath)
-    return downloadWithRetry(url, fullPath)
-  }, (c, f, s) => {
+    return downloadWithRetry(url, fullPath, MAIN_DOWNLOAD_RETRIES)
+  }, (c, f, s, stats) => {
     completed = c
     failed = f
     skipped = s
@@ -241,6 +273,7 @@ export async function downloadTiles(
     event.sender.send('download:progress', {
       taskId,
       progress: { total, completed, failed, skipped },
+      failureStats: stats,
       status: 'running',
     })
   })
@@ -249,6 +282,7 @@ export async function downloadTiles(
     event.sender.send('download:progress', {
       taskId,
       progress: { total, completed, failed, skipped },
+      failureStats: { ...taskControl.failureStats },
       status: 'cancelled',
     })
     downloadTasks.delete(taskId)
@@ -258,6 +292,7 @@ export async function downloadTiles(
   event.sender.send('download:progress', {
     taskId,
     progress: { total, completed, failed, skipped },
+    failureStats: { ...taskControl.failureStats },
     status: 'completed',
   })
   if (failed === 0) {
@@ -272,7 +307,7 @@ export async function retryFailedTiles(
   const { failedCoords, urlTemplate, saveDir, nameFormat, sourceName, subdomains, taskId, concurrency } = options
   const maxConcurrent = concurrency ?? DEFAULT_CONCURRENCY
 
-  const taskControl: TaskControl = { cancelled: false, failedTileCoords: [] }
+  const taskControl: TaskControl = { cancelled: false, failedTileCoords: [], failureStats: {} }
   downloadTasks.set(taskId, taskControl)
 
   const total = failedCoords.length
@@ -284,8 +319,8 @@ export async function retryFailedTiles(
     const url = buildTileUrl(urlTemplate, tile.z, tile.x, tile.y, subdomains)
     const tilePath = buildTilePath(nameFormat, sourceName, tile.z, tile.x, tile.y)
     const fullPath = path.join(saveDir, tilePath)
-    return downloadWithRetry(url, fullPath)
-  }, (c, f, s) => {
+    return downloadWithRetry(url, fullPath, RETRY_DOWNLOAD_RETRIES)
+  }, (c, f, s, stats) => {
     completed = c
     failed = f
     skipped = s
@@ -293,6 +328,7 @@ export async function retryFailedTiles(
     event.sender.send('download:progress', {
       taskId,
       progress: { total, completed, failed, skipped },
+      failureStats: stats,
       status: 'running',
     })
   })
@@ -301,6 +337,7 @@ export async function retryFailedTiles(
     event.sender.send('download:progress', {
       taskId,
       progress: { total, completed, failed, skipped },
+      failureStats: { ...taskControl.failureStats },
       status: 'cancelled',
     })
     downloadTasks.delete(taskId)
@@ -310,6 +347,7 @@ export async function retryFailedTiles(
   event.sender.send('download:progress', {
     taskId,
     progress: { total, completed, failed, skipped },
+    failureStats: { ...taskControl.failureStats },
     status: 'completed',
   })
   if (failed === 0) {

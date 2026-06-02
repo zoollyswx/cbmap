@@ -54,6 +54,7 @@ export interface DownloadTask {
     skipped: number
   }
   error?: string
+  failureStats?: Record<string, number>
   startedAt?: number
   completedAt?: number
 }

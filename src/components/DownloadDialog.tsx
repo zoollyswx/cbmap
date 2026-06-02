@@ -233,6 +233,15 @@ export default function DownloadDialog() {
   const isDone = activeTask?.status === 'completed'
   const hasFailed = activeTask?.progress.failed && activeTask.progress.failed > 0
   const progress = activeTask?.progress
+  const processedCount = progress
+    ? progress.completed + progress.skipped + progress.failed
+    : 0
+  const failureEntries = activeTask?.failureStats
+    ? Object.entries(activeTask.failureStats)
+        .filter(([, count]) => count > 0)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 4)
+    : []
 
   return (
     <div className="download-overlay">
@@ -418,7 +427,7 @@ export default function DownloadDialog() {
                   width: `${activeTask.status === 'completed' || activeTask.status === 'cancelled'
                     ? 100
                     : progress && progress.total > 0
-                      ? ((progress.completed + progress.skipped) / progress.total) * 100
+                      ? (processedCount / progress.total) * 100
                       : 0}%`,
                   background: activeTask.status === 'completed'
                     ? '#4caf50'
@@ -440,6 +449,18 @@ export default function DownloadDialog() {
                 </>
               )}
             </div>
+            {failureEntries.length > 0 && (
+              <div style={{
+                fontSize: 11,
+                color: '#b45309',
+                marginTop: 4,
+                lineHeight: 1.5,
+              }}>
+                失败原因: {failureEntries
+                  .map(([reason, count]) => `${reason}: ${count.toLocaleString()}`)
+                  .join(' | ')}
+              </div>
+            )}
           </div>
         )}
 

@@ -34,6 +34,7 @@ export default function App() {
         useStore.getState().updateDownloadTask(data.taskId, {
           status: data.status,
           progress: data.progress,
+          failureStats: data.failureStats,
         })
       })
     } else {
