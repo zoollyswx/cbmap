@@ -1,28 +1,12 @@
 import fs from 'fs'
 import path from 'path'
-import https from 'https'
-import http from 'http'
+import { net } from 'electron'
 
-const TILE_TIMEOUT_MS = 8000
-const MAIN_DOWNLOAD_RETRIES = 0
-const RETRY_DOWNLOAD_RETRIES = 1
+const TILE_TIMEOUT_MS = 30000
+const MAIN_DOWNLOAD_RETRIES = 2
+const RETRY_DOWNLOAD_RETRIES = 2
 const DEFAULT_CONCURRENCY = 4
 const RETRYABLE_STATUS_CODES = new Set([408, 500, 502, 503, 504])
-
-// Node.js https 模块没有 Chromium 的 per-host 连接数限制
-const httpsAgent = new https.Agent({
-  keepAlive: true,
-  maxSockets: 32,
-  maxFreeSockets: 16,
-  timeout: TILE_TIMEOUT_MS,
-})
-
-const httpAgent = new http.Agent({
-  keepAlive: true,
-  maxSockets: 32,
-  maxFreeSockets: 16,
-  timeout: TILE_TIMEOUT_MS,
-})
 
 interface TaskControl {
   cancelled: boolean
@@ -114,9 +98,10 @@ function downloadSingleTile(url: string, filePath: string): Promise<TileResult> 
       resolve(tileResult('failed', 'invalid-url'))
       return
     }
-    const isHttps = parsedUrl.protocol === 'https:'
-    const transport = isHttps ? https : http
-    const agent = isHttps ? httpsAgent : httpAgent
+    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+      resolve(tileResult('failed', 'invalid-protocol'))
+      return
+    }
 
     let done = false
     const finish = (result: TileResult) => {
@@ -128,46 +113,43 @@ function downloadSingleTile(url: string, filePath: string): Promise<TileResult> 
 
     const timeout = setTimeout(() => {
       if (!done) {
-        req.destroy()
+        req.abort()
         finish(tileResult('retryable-failed', 'timeout'))
       }
     }, TILE_TIMEOUT_MS)
 
-    const req = transport.request(
+    const req = net.request({
+      method: 'GET',
       url,
-      {
-        agent,
-        headers: {
-          'User-Agent': 'CBMap/1.0',
-          'Accept': 'image/*',
-        },
-        timeout: TILE_TIMEOUT_MS,
-      },
-      (res) => {
-        if (res.statusCode !== 200) {
-          res.resume()
-          const reason = `http ${res.statusCode ?? 'unknown'}`
-          finish(tileResult(
-            RETRYABLE_STATUS_CODES.has(res.statusCode ?? 0) ? 'retryable-failed' : 'failed',
-            reason
-          ))
-          return
-        }
+    })
+    req.setHeader('User-Agent', 'CBMap/1.0')
+    req.setHeader('Accept', 'image/*')
 
-        const chunks: Buffer[] = []
-        res.on('data', (chunk: Buffer) => chunks.push(chunk))
-        res.on('end', () => {
-          const buffer = Buffer.concat(chunks)
-          try {
-            fs.writeFileSync(filePath, buffer)
-            finish(tileResult('downloaded'))
-          } catch {
-            finish(tileResult('failed', 'write-file'))
-          }
-        })
+    req.on('response', (res) => {
+      if (res.statusCode !== 200) {
+        const reason = `http ${res.statusCode ?? 'unknown'}`
+        res.on('data', () => {})
+        res.on('end', () => finish(tileResult(
+          RETRYABLE_STATUS_CODES.has(res.statusCode ?? 0) ? 'retryable-failed' : 'failed',
+          reason
+        )))
         res.on('error', () => finish(tileResult('retryable-failed', 'response-error')))
+        return
       }
-    )
+
+      const chunks: Buffer[] = []
+      res.on('data', (chunk: Buffer) => chunks.push(chunk))
+      res.on('end', () => {
+        const buffer = Buffer.concat(chunks)
+        try {
+          fs.writeFileSync(filePath, buffer)
+          finish(tileResult('downloaded'))
+        } catch {
+          finish(tileResult('failed', 'write-file'))
+        }
+      })
+      res.on('error', () => finish(tileResult('retryable-failed', 'response-error')))
+    })
 
     req.on('error', () => finish(tileResult('retryable-failed', 'network')))
     req.end()

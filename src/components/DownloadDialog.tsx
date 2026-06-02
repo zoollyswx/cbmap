@@ -355,12 +355,7 @@ export default function DownloadDialog() {
             />
           </div>
           <div className="form-group" style={{ flex: 1 }}>
-            <label>
-              并发数
-              <span style={{ fontWeight: 400, color: '#999', marginLeft: 4, fontSize: 11 }}>
-                — 同时下载的线程数
-              </span>
-            </label>
+            <label>并发数</label>
             <select
               value={concurrency}
               onChange={e => setConcurrency(Number(e.target.value))}

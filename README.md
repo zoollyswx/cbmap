@@ -18,12 +18,12 @@ CBMap 是一个 Windows 离线地图瓦片下载工具。你可以导入 WKT/Geo
 
 **Windows 11 64-bit installer:**
 
-[Download CBMap 1.0.0 for Windows x64](https://github.com/zoollyswx/cbmap/releases/download/v1.0.0/CBMap.Setup.1.0.0.Windows.x64.exe)
+[Download CBMap 1.0.1 for Windows x64](https://github.com/zoollyswx/cbmap/releases/download/v1.0.1/CBMap.Setup.1.0.1.Windows.x64.exe)
 
 File verification:
 
 ```text
-SHA256: 10D9F36D4457B8365A7D17270429AABCE478F135135A677FBE9B9F77A1201843
+SHA256: F77FA9D0E0D74B3A806ABD13BE6E8CE596A052232F0FFCE337E92242E35B7FA5
 Size:   141,758,464 bytes
 ```
 
